@@ -1847,6 +1847,204 @@ void ship_combat_log_data()
   }
 }
 
+// ---------------------------------------------------------------------------
+// Game activity (events) processing
+// ---------------------------------------------------------------------------
+
+void process_game_activity(std::unique_ptr<std::string>&& bytes)
+{
+  using json = nlohmann::json;
+
+  if (auto response = Digit::PrimeServer::Models::GameActivity(); response.ParseFromString(*bytes)) {
+
+    http::sync_log_trace("PROCESS", "game activity",
+                         STR_FORMAT("Processing game activity id={}", response.activityid()));
+
+    auto event_array = json::array();
+
+    json trackers = json::array();
+    for (const auto& tracker : response.goaltracker()) {
+      json t = {{"score", tracker.score()}};
+      if (tracker.has_entityref()) {
+        t["entity_id"] = tracker.entityref().entityid();
+        t["entity_type"] = static_cast<int>(tracker.entityref().entitytype());
+      }
+      trackers.push_back(std::move(t));
+    }
+
+    json phase = json(nullptr);
+    if (response.has_activityphase()) {
+      phase = {
+        {"phase_spec_id", response.activityphase().phasespecid()},
+        {"start_at", response.activityphase().has_startat()
+                         ? json(response.activityphase().startat().seconds())
+                         : json(nullptr)}
+      };
+    }
+
+    event_array.push_back({
+      {"type", SyncConfig::Type::Events},
+      {"activity_id", response.activityid()},
+      {"activity_spec_id", response.activityspecid()},
+      {"goal_tracker", trackers},
+      {"activity_phase", phase},
+      {"start_at", response.has_startat() ? json(response.startat().seconds()) : json(nullptr)}
+    });
+
+    if (!event_array.empty()) {
+      queue_data(SyncConfig::Type::Events, event_array);
+    }
+  } else {
+    spdlog::error("Failed to parse game activity");
+  }
+}
+
+void process_game_activity_specs(std::unique_ptr<std::string>&& bytes)
+{
+  using json = nlohmann::json;
+
+  if (auto response = Digit::PrimeServer::Models::StaticSyncGameActivitySpecsResponse();
+      response.ParseFromString(*bytes)) {
+
+    http::sync_log_trace("PROCESS", "game activity specs",
+                         STR_FORMAT("Processing {} activity specs", response.gameactivityspecs_size()));
+
+    auto spec_array = json::array();
+    for (const auto& spec : response.gameactivityspecs()) {
+      json phases = json::array();
+      for (const auto phase_id : spec.phases()) {
+        phases.push_back(phase_id);
+      }
+
+      spec_array.push_back({
+        {"type", "event_spec"},
+        {"id", spec.id()},
+        {"id_str", spec.idstr()},
+        {"activity_type", static_cast<int>(spec.type())},
+        {"phases", phases},
+        {"rank_id", spec.rankid()},
+        {"participant_id", spec.participantid()}
+      });
+    }
+
+    if (!spec_array.empty()) {
+      queue_data(SyncConfig::Type::Events, spec_array);
+    }
+  } else {
+    spdlog::error("Failed to parse game activity specs");
+  }
+}
+
+void process_game_activity_detailed_specs(std::unique_ptr<std::string>&& bytes)
+{
+  using json = nlohmann::json;
+
+  if (auto response = Digit::PrimeServer::Models::GameActivityDetailedSpecsResponse();
+      response.ParseFromString(*bytes)) {
+
+    http::sync_log_trace("PROCESS", "game activity detailed specs",
+                         STR_FORMAT("Processing detailed spec for activity spec {}", response.gameactivityspecid()));
+
+    json rules = json::array();
+    for (const auto& rule : response.rules()) {
+      json r = {
+        {"rule_type", static_cast<int>(rule.ruletype())},
+        {"rule_type_str", rule.ruletypestr()}
+      };
+
+      if (rule.has_goal()) {
+        json resources = json::array();
+        for (const auto rid : rule.goal().score().resources()) {
+          resources.push_back(rid);
+        }
+        r["goal"] = {{"method", static_cast<int>(rule.goal().method())}, {"resources", resources}};
+      }
+
+      rules.push_back(std::move(r));
+    }
+
+    json phases = json::array();
+    for (const auto& phase : response.phases()) {
+      json end_conditions = json::array();
+      for (const auto& ec : phase.endconditions()) {
+        json cond = {{"type", static_cast<int>(ec.type())}};
+        if (ec.has_score()) {
+          cond["score"] = ec.score();
+        }
+        if (ec.has_duration()) {
+          cond["duration"] = ec.duration();
+        }
+        end_conditions.push_back(std::move(cond));
+      }
+
+      json phase_rules = json::array();
+      for (const auto& pr : phase.rules()) {
+        json pr_json = {
+          {"rule_type", static_cast<int>(pr.ruletype())},
+          {"rule_type_str", pr.ruletypestr()}
+        };
+        phase_rules.push_back(std::move(pr_json));
+      }
+
+      phases.push_back({
+        {"id", phase.id()},
+        {"id_str", phase.idstr()},
+        {"phase_type", static_cast<int>(phase.phasetype())},
+        {"end_conditions", end_conditions},
+        {"rules", phase_rules}
+      });
+    }
+
+    auto detail_array = json::array();
+    detail_array.push_back({
+      {"type", "event_detailed_spec"},
+      {"activity_spec_id", response.gameactivityspecid()},
+      {"rules", rules},
+      {"phases", phases}
+    });
+
+    queue_data(SyncConfig::Type::Events, detail_array);
+  } else {
+    spdlog::error("Failed to parse game activity detailed specs");
+  }
+}
+
+void process_game_activity_schedule_specs(std::unique_ptr<std::string>&& bytes)
+{
+  using json = nlohmann::json;
+
+  if (auto response = Digit::PrimeServer::Models::StaticSyncGameActivityScheduleSpecsResponse();
+      response.ParseFromString(*bytes)) {
+
+    http::sync_log_trace("PROCESS", "game activity schedule specs",
+                         STR_FORMAT("Processing {} schedule specs", response.gameactivityschedulespecs_size()));
+
+    auto schedule_array = json::array();
+    for (const auto& sched : response.gameactivityschedulespecs()) {
+      json weekdays = json::object();
+      for (const auto& [day, day_sched] : sched.byweekday()) {
+        json day_schedules = json::array();
+        for (const auto& s : day_sched.schedules()) {
+          day_schedules.push_back({{"start_time", s.starttime()}, {"end_time", s.endtime()}});
+        }
+        weekdays[std::to_string(day)] = day_schedules;
+      }
+
+      schedule_array.push_back({
+        {"type", "event_schedule"},
+        {"activity_spec_id", sched.gameactivityspecid()},
+        {"by_weekday", weekdays}
+      });
+    }
+
+    if (!schedule_array.empty()) {
+      queue_data(SyncConfig::Type::Events, schedule_array);
+    }
+  } else {
+    spdlog::error("Failed to parse game activity schedule specs");
+  }
+}
+
 void HandleEntityGroup(EntityGroup* entity_group)
 {
   if (entity_group == nullptr || entity_group->Group == nullptr || entity_group->Group->bytes == nullptr
@@ -1947,6 +2145,26 @@ void HandleEntityGroup(EntityGroup* entity_group)
     case EntityGroup::Type::AllianceProfiles:
       if (Config::Get().sync_options.battlelogs) {
         submit_async(cache_alliance_names);
+      }
+      break;
+    case EntityGroup::Type::GameActivity:
+      if (Config::Get().sync_options.events) {
+        submit_async(process_game_activity);
+      }
+      break;
+    case EntityGroup::Type::GameActivitySpecs:
+      if (Config::Get().sync_options.events) {
+        submit_async(process_game_activity_specs);
+      }
+      break;
+    case EntityGroup::Type::GameActivityDetailedSpec:
+      if (Config::Get().sync_options.events) {
+        submit_async(process_game_activity_detailed_specs);
+      }
+      break;
+    case EntityGroup::Type::GameActivityScheduleSpec:
+      if (Config::Get().sync_options.events) {
+        submit_async(process_game_activity_schedule_specs);
       }
       break;
     default:
