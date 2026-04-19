@@ -5,6 +5,7 @@
 
 #include <il2cpp-api-types.h>
 #include <Digit.PrimeServer.Models.pb.h>
+#include <Digit.PrimePlatform.Models.pb.h>
 #include <il2cpp/il2cpp_helper.h>
 #include <prime/EntityGroup.h>
 #include <prime/HttpResponse.h>
@@ -2045,6 +2046,187 @@ void process_game_activity_schedule_specs(std::unique_ptr<std::string>&& bytes)
   }
 }
 
+// ============================================================================
+// Platform Events
+// ============================================================================
+
+void process_platform_events(std::unique_ptr<std::string>&& bytes)
+{
+  using json = nlohmann::json;
+
+  auto events_msg = Digit::PrimePlatform::Models::Events();
+  if (!events_msg.ParseFromString(*bytes)) {
+    spdlog::error("Failed to parse platform Events message");
+    return;
+  }
+
+  http::sync_log_trace("PROCESS", "platform events",
+                       STR_FORMAT("Processing {} platform events", events_msg.tournaments_size()));
+
+  auto event_array = json::array();
+
+  for (const auto& event : events_msg.tournaments()) {
+    json schedule_json = json(nullptr);
+    if (event.has_schedule()) {
+      const auto& s = event.schedule();
+      schedule_json = {
+        {"term", s.term()},
+        {"round_number", s.roundnumber()},
+        {"announce", s.has_announce() ? json(s.announce().seconds()) : json(nullptr)},
+        {"start", s.has_start() ? json(s.start().seconds()) : json(nullptr)},
+        {"display", s.has_display() ? json(s.display().seconds()) : json(nullptr)},
+        {"delay", s.has_delay() ? json(s.delay().seconds()) : json(nullptr)},
+        {"end", s.has_end() ? json(s.end().seconds()) : json(nullptr)},
+        {"next_start", s.has_nextstart() ? json(s.nextstart().seconds()) : json(nullptr)},
+      };
+    }
+
+    json ranking_json = json(nullptr);
+    if (event.has_ranking()) {
+      const auto& r = event.ranking();
+      ranking_json = {
+        {"id", r.id()},
+        {"position", r.position()},
+        {"rank", r.rank()},
+        {"score", r.scoredouble() != 0.0 ? json(r.scoredouble()) : json(r.score())},
+        {"delta", r.delta()},
+        {"instance_id", r.instanceid()},
+        {"relative_position", r.relativeposition()},
+      };
+    }
+
+    json entry_json = json(nullptr);
+    if (event.has_entrydata()) {
+      const auto& e = event.entrydata();
+      entry_json = {
+        {"is_registered", e.isregistered()},
+        {"can_claim", e.canclaim()},
+        {"last_claimed_reward_index", e.lastclaimedrewardindex()},
+        {"join_forbidden", static_cast<int>(e.joinforbidden())},
+      };
+    }
+
+    json metadata_json = json(nullptr);
+    if (event.has_metadata()) {
+      const auto& m = event.metadata();
+
+      json scoring_info = json::array();
+      for (const auto& si : m.scoringinfo()) {
+        scoring_info.push_back({
+          {"id", si.id()},
+          {"icon", si.icon()},
+        });
+      }
+
+      metadata_json = {
+        {"is_auto_register", m.isautoregister()},
+        {"auto_reward", m.autoreward()},
+        {"immediate_reward", m.immediatereward()},
+        {"icon_asset_id", m.iconassetid()},
+        {"cta", m.cta()},
+        {"priority", m.priority()},
+        {"is_cross_server", m.iscrossserver()},
+        {"battle_pass_link", m.battlepasslink()},
+        {"battle_pass_resource_id", m.battlepassresourceid()},
+        {"battle_pass_type", static_cast<int>(m.battlepasstype())},
+        {"meta_event_day", m.metaeventday()},
+        {"meta_event_section", m.metaeventsection()},
+        {"scoring_info", scoring_info},
+      };
+    }
+
+    json segments_json = json::array();
+    for (const auto& seg : event.segments()) {
+      json rewards = json::array();
+      for (const auto& rew : seg.rewards()) {
+        json positions = json::array();
+        for (const auto pos : rew.position()) {
+          positions.push_back(pos);
+        }
+        rewards.push_back({
+          {"position", positions},
+          {"amount", rew.amount()},
+          {"type", rew.type()},
+          {"level", rew.level()},
+        });
+      }
+
+      json values = json::array();
+      for (const auto v : seg.values()) {
+        values.push_back(v);
+      }
+
+      segments_json.push_back({
+        {"type", static_cast<int>(seg.type())},
+        {"values", values},
+        {"rewards", rewards},
+      });
+    }
+
+    event_array.push_back({
+      {"type", "platform_event"},
+      {"config_id", event.configid()},
+      {"source", event.source()},
+      {"event_type", event.eventtype()},
+      {"category", static_cast<int>(event.category())},
+      {"placement_type", static_cast<int>(event.placementtype())},
+      {"group_name", event.groupname()},
+      {"category_group_id", event.categorygroupid()},
+      {"schedule", schedule_json},
+      {"ranking", ranking_json},
+      {"entry_data", entry_json},
+      {"metadata", metadata_json},
+      {"segments", segments_json},
+    });
+  }
+
+  if (!event_array.empty()) {
+    queue_data(SyncConfig::Type::Events, event_array);
+  }
+}
+
+void process_platform_event_ranking(std::unique_ptr<std::string>&& bytes)
+{
+  using json = nlohmann::json;
+
+  auto ranking_msg = Digit::PrimePlatform::Models::EventRanking();
+  if (!ranking_msg.ParseFromString(*bytes)) {
+    spdlog::error("Failed to parse platform EventRanking message");
+    return;
+  }
+
+  http::sync_log_trace("PROCESS", "platform event ranking",
+                       STR_FORMAT("Processing event ranking for config_id={}", ranking_msg.configid()));
+
+  auto rank_array = json::array();
+  for (const auto& r : ranking_msg.ranks()) {
+    rank_array.push_back({
+      {"type", "platform_event_ranking"},
+      {"config_id", ranking_msg.configid()},
+      {"id", r.id()},
+      {"position", r.position()},
+      {"rank", r.rank()},
+      {"score", r.scoredouble() != 0.0 ? json(r.scoredouble()) : json(r.score())},
+      {"delta", r.delta()},
+      {"instance_id", r.instanceid()},
+      {"relative_position", r.relativeposition()},
+    });
+  }
+
+  if (!rank_array.empty()) {
+    queue_data(SyncConfig::Type::Events, rank_array);
+  }
+}
+
+// Flag to distinguish platform vs game server calls
+static thread_local bool g_is_platform_call = false;
+
+// Platform EntityGroup type values (from Digit.Platform.Models.proto)
+namespace PlatformType {
+  constexpr int EventRanking      = 6;
+  constexpr int EventsModel       = 7;
+}
+
 void HandleEntityGroup(EntityGroup* entity_group)
 {
   if (entity_group == nullptr || entity_group->Group == nullptr || entity_group->Group->bytes == nullptr
@@ -2168,6 +2350,15 @@ void HandleEntityGroup(EntityGroup* entity_group)
       }
       break;
     default:
+      // When called from the platform handler, dispatch platform entity types
+      if (g_is_platform_call) {
+        const int raw_type = static_cast<int>(entity_group->Type_);
+        if (raw_type == PlatformType::EventsModel && Config::Get().sync_options.events) {
+          submit_async(process_platform_events);
+        } else if (raw_type == PlatformType::EventRanking && Config::Get().sync_options.events) {
+          submit_async(process_platform_event_ranking);
+        }
+      }
       break;
   }
 }
@@ -2234,6 +2425,22 @@ void GameServerModelRegistry_HandleBinaryObjects(auto original, void* _this, Ser
   return original(_this, service_response);
 }
 
+// Platform handler — sets flag so HandleEntityGroup dispatches platform types
+void PlatformModelRegistry_ProcessResultInternal(auto original, void* _this, HttpResponse* http_response,
+                                                  ServiceResponse* service_response, void* callback,
+                                                  void* callback_error)
+{
+  g_is_platform_call = true;
+  const auto entity_groups = service_response->EntityGroups;
+  for (int i = 0; i < entity_groups->Count; ++i) {
+    const auto entity_group = entity_groups->get_Item(i);
+    HandleEntityGroup(entity_group);
+  }
+  g_is_platform_call = false;
+
+  return original(_this, http_response, service_response, callback, callback_error);
+}
+
 void PrimeApp_InitPrimeServer(auto original, void* _this, Il2CppString* gameServerUrl, Il2CppString* gatewayServerUrl,
                               Il2CppString* sessionId, Il2CppString* serverRegion)
 {
@@ -2287,7 +2494,7 @@ void InstallSyncPatches()
     if (const auto ptr = platform_model_registry.GetMethod("ProcessResultInternal"); ptr == nullptr) {
       ErrorMsg::MissingMethod("PlatformModelRegistry", "ProcessResultInterval");
     } else {
-      SPUD_STATIC_DETOUR(ptr, GameServerModelRegistry_ProcessResultInternal);
+      SPUD_STATIC_DETOUR(ptr, PlatformModelRegistry_ProcessResultInternal);
     }
   }
 
